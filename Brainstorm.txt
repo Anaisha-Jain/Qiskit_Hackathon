@@ -1,0 +1,27 @@
+Problem: Protons can tunnel between DNA base pairs and briefly form rare tautomers, a proposed source of spontaneous point mutations.
+ This is quantum biology with cancer implications.
+Bridge: Input a base pair (A-T or G-C) and get a double-well potential, discretized onto qubits.
+ Simulate proton transfer dynamics and tunneling probability under different conditions (temperature, nearby drug molecules).
+Quantum part: Hamiltonian simulation with Trotterization, and optionally open-system dynamics with a Lindblad or ancilla-based model.
+
+Resources: https://pubmed.ncbi.nlm.nih.gov/39069038/
+
+
+Image: the image shows a simulated proton trying to move from its normal position to the “wrong” position in a DNA base pair. That wrong position is the tautomer.
+    Right panel (the important one)
+    The proton starts in its normal spot, the left well.
+    The y-axis is the probability of finding it in the wrong spot, the right well.
+    The x-axis is time.
+    Blue line (symmetric): the two spots have equal energy, so the proton swings back and forth between them and reaches about 99%. This is the idealized case.
+    Orange line (asymmetric): the wrong spot has higher energy, like a real base pair where the normal form is much more stable. The proton only reaches about 17%. This is closer to real DNA, where the rare form is just that, rare.
+
+    So the plot reads as: “the more the wrong position is disfavored, the less likely the proton is to show up there.” In your finished tool, A-T and G-C would each get their own curve, and you’d compare how likely each is to enter the tautomer form.
+    Left panel (the setup behind it)
+    It’s the energy landscape the proton lives in: two dips (normal and wrong position) separated by a hill (the barrier). The colored lines are the proton’s lowest-energy quantum states. They sit below the top of the hill, which is the point: the proton shouldn’t get over, but quantum mechanics lets it tunnel through.
+    Conclusion: bigger energy difference between the wells means a lower chance of the proton reaching the wrong spot.
+
+Real physics instead of placeholders. Pull barrier heights and well asymmetry for A-T and G-C from the proton-transfer literature, convert to real units (energy, distance, proton mass), and cite your sources. A tool that outputs tunneling timescales for actual base pairs is much more convincing than dimensionless toy numbers. Most of the effort is reading papers and doing the unit conversion carefully.
+Temperature and decoherence (open quantum system). The plain model oscillates forever, which real biology doesn’t. Add a noise or dissipation channel (density-matrix simulation, then a Qiskit version with ancilla qubits or Aer noise) and output a tunneling rate versus temperature. This is the physics the real research on this topic cares about, and it addresses the limitation I flagged in the pitch. It’s the hardest upgrade and the most impressive.
+A second quantum algorithm. Use VQE plus an excited-state method (SSVQE or qEOM) to compute the tunneling splitting directly, then compare it with Trotter dynamics and exact diagonalization. Two algorithms cross-checked against each other looks like real methodology.
+Two protons at once. A-T has two hydrogen bonds and G-C has three. Model coupled proton transfer in 2D (for example 2 × 4 = 8 qubits). The Hamiltonian grows, the circuits get deeper, and a scaling study of qubits versus gate count versus classical cost makes a better “why quantum” slide.
+A real hardware run. Run a small instance on an IBM QPU with error mitigation and compare it against the simulator. This is low-effort for a high wow factor, as long as you keep the circuit shallow.
