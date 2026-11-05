@@ -1,19 +1,5 @@
 """
-DNA proton-tunneling simulator  (Qiskit hackathon project)
-All project code lives in this one file. Run:  python main.py
-
-SETUP (one time, see requirements.txt):
-    python -m venv .venv
-    .venv\\Scripts\\activate          (Windows)   |   source .venv/bin/activate  (macOS/Linux)
-    pip install -r requirements.txt
-
-Day 1: Qiskit basics (circuits, SparsePauliOp, Trotter vs exact)
-Day 2: classical double-well model (the ground truth for later days)
-Day 3: quantum version -- SparsePauliOp + Trotterized circuits vs the exact curve
-Day 4: real physics -- literature A-T / G-C proton-transfer potentials in atomic units
-Day 5: open quantum system -- thermal bath, tautomer population & rate vs temperature
-
-Run everything:   python main.py        Run chosen days:   python main.py 4 5
+ streamlit run main.py
 """
 import warnings
 import sys
@@ -541,11 +527,300 @@ def day5_open_system(eta=ETA_DEFAULT):
     plt.show()
 
 
+# =====================================================================
+# DAY 6: SHALLOW-CIRCUIT ENERGY LEVELS (variational quantum deflation) -- the hardware-friendly part
+# =====================================================================
+# Trotter circuits (Days 3-4) are far too deep for today's hardware. A variational circuit is the
+# opposite trade: a SHORT, fixed-depth circuit whose angles are tuned by a classical optimizer.
+#   Level 0: minimize <psi|H|psi>                         (VQE)
+#   Level k: minimize <psi|H|psi> + beta * sum_j |<psi_j|psi>|^2   (VQD: penalise overlap with lower levels)
+# On hardware, <psi|H|psi> comes from the Estimator primitive; here we evaluate it exactly on a
+# Statevector, which gives the answer a perfect (noise-free, infinite-shot) device would give.
+def vqd_energy_levels(n_qubits=6, base_pair="G-C", n_levels=3, reps=4, beta=8.0, maxiter=200, seed=0, verbose=True):
+    from qiskit.circuit.library import RealAmplitudes
+    from scipy.optimize import minimize
+    x, H, V, info = build_pes_hamiltonian(base_pair, n_qubits)
+    unit = 0.1 / HARTREE_EV                                   # energy unit: 0.1 eV (about one level spacing)
+    ref = V.min()                                             # shift by the potential minimum (no diagonalisation needed)
+    Hn = (H - ref * np.eye(len(x))) / unit
+    ansatz = RealAmplitudes(n_qubits, reps=reps, entanglement="linear").decompose()
+    energy_of = lambda psi: (psi.conj() @ (Hn @ psi)).real
+    state_of = lambda th: Statevector(ansatz.assign_parameters(th)).data
+
+    levels, states, traces, theta_prev = [], [], [], None
+    rng = np.random.default_rng(seed)
+    for k in range(n_levels):
+        trace = []
+
+        def objective(th):
+            psi = state_of(th)
+            e = energy_of(psi)
+            trace.append(e)
+            return e + beta * sum(abs(np.vdot(p, psi)) ** 2 for p in states)
+
+        th0 = (rng.normal(0, 0.6, ansatz.num_parameters) if theta_prev is None
+               else theta_prev + rng.normal(0, 0.3, ansatz.num_parameters))   # warm start from previous level
+        res = minimize(objective, th0, method="L-BFGS-B", options=dict(maxiter=maxiter))
+        states.append(state_of(res.x)); levels.append(energy_of(states[-1])); traces.append(trace); theta_prev = res.x
+        if verbose:
+            print(f"  level {k} done ({len(trace)} circuit evaluations)", flush=True)
+
+    # exact answer (classical diagonalisation) only for checking
+    E, U = np.linalg.eigh(Hn)
+    out = dict(vqd_eV=np.array(levels) * 0.1, exact_eV=E[:n_levels] * 0.1,
+               overlap=[abs(np.vdot(U[:, k], states[k])) ** 2 for k in range(n_levels)],
+               traces=traces, exact_units=E[:n_levels], ansatz=ansatz, H=H, n_qubits=n_qubits)
+    return out
+
+
+def day6_vqd(n_levels=3):
+    print("\n=== DAY 6: shallow-circuit energy levels (variational quantum deflation) ===")
+    n_qubits = 6
+    r = vqd_energy_levels(n_qubits=n_qubits, n_levels=n_levels)
+    print("\nlevel   VQD (eV above potential min)   exact (eV)   error (meV)   overlap with exact eigenstate")
+    for k in range(n_levels):
+        err = (r["vqd_eV"][k] - r["exact_eV"][k]) * 1000
+        print(f"  {k}              {r['vqd_eV'][k]:8.4f}                  {r['exact_eV'][k]:8.4f}      {err:8.2f}          {r['overlap'][k]:.4f}")
+    gap_err = ((r["vqd_eV"][1] - r["vqd_eV"][0]) - (r["exact_eV"][1] - r["exact_eV"][0])) * 1000
+    print(f"  first level spacing (E1 - E0) error: {gap_err:.2f} meV out of {(r['exact_eV'][1]-r['exact_eV'][0])*1000:.0f} meV")
+
+    # --- cost comparison: variational circuit vs Trotter circuits, and measurement burden ---
+    ans = r["ansatz"]
+    op = SparsePauliOp.from_operator(r["H"])
+    lie, _ = trotter_step(op, n_qubits, 1.0, LieTrotter(reps=1))
+    suz, _ = trotter_step(op, n_qubits, 1.0, SuzukiTrotter(order=4, reps=1))
+    groups = op.group_commuting(qubit_wise=True)
+    print(f"\nCircuit cost on {n_qubits} qubits:")
+    print(f"  variational ansatz        : depth {ans.depth():>6}, {ans.count_ops().get('cx', 0):>4} CNOTs, {ans.num_parameters} angles")
+    print(f"  ONE Lie-Trotter step      : depth {lie.depth():>6}, {lie.count_ops().get('cx', 0):>4} CNOTs")
+    print(f"  ONE order-4 Trotter step  : depth {suz.depth():>6}, {suz.count_ops().get('cx', 0):>4} CNOTs   (x ~1500 steps for the dynamics)")
+    print(f"  measuring <H> on hardware : {len(op)} Pauli terms -> {len(groups)} measurement circuits per energy evaluation")
+
+    fig, ax = plt.subplots(1, 3, figsize=(16, 4.6))
+    k = np.arange(n_levels)
+    ax[0].plot(k, r["exact_eV"], "ks", ms=10, label="exact")
+    ax[0].plot(k, r["vqd_eV"], "ro", ms=6, label="VQD circuit")
+    ax[0].set_xticks(k); ax[0].set_xlabel("level"); ax[0].set_ylabel("energy above potential minimum (eV)")
+    ax[0].set_title("Energy levels: quantum circuit vs exact"); ax[0].legend()
+    for kk, tr in enumerate(r["traces"]):
+        ax[1].plot(np.maximum(np.array(tr) - r["exact_units"][kk], 1e-5), label=f"level {kk}")
+    ax[1].set_yscale("log"); ax[1].set_xlabel("circuit evaluation"); ax[1].set_ylabel("energy error (0.1 eV units)")
+    ax[1].set_title("Optimisation progress"); ax[1].legend()
+    labels = ["VQD ansatz", "1 Lie step", "1 order-4 step", "full Trotter\ndynamics"]
+    depths = [ans.depth(), lie.depth(), suz.depth(), suz.depth() * 1500]
+    ax[2].bar(labels, depths, color=["tab:green", "tab:orange", "tab:orange", "tab:red"])
+    ax[2].set_yscale("log"); ax[2].set_ylabel("circuit depth"); ax[2].set_title("Why variational suits hardware")
+    plt.tight_layout(); plt.savefig("day6_vqd.png", dpi=120)
+    print("Saved plot -> day6_vqd.png")
+    plt.show()
+    return r
+
+
+# =====================================================================
+# DAY 7: DNA STRAND MODE + STREAMLIT APP
+# =====================================================================
+PAIR_OF_BASE = {"A": "A-T", "T": "A-T", "G": "G-C", "C": "G-C"}
+COMPLEMENT = str.maketrans("ACGT", "TGCA")
+
+
+def clean_strand(text):
+    """Accept a plain or FASTA-style DNA string; return upper-case ACGT only. Raises ValueError otherwise."""
+    lines = [ln for ln in text.strip().splitlines() if not ln.startswith(">")]
+    seq = "".join("".join(lines).split()).upper()
+    bad = sorted(set(seq) - set("ACGT"))
+    if not seq:
+        raise ValueError("Please enter a DNA sequence using the letters A, C, G, T.")
+    if bad:
+        raise ValueError(f"Unsupported characters: {', '.join(bad)}. Use only A, C, G, T.")
+    return seq
+
+
+def analyze_strand(sequence, temperature_K=310.0, eta=ETA_DEFAULT, n_qubits=6):
+    """Per-position tautomer propensity for a DNA strand (one strand given; its partner is the complement).
+    The simulation depends only on the base-pair TYPE (A-T or G-C), so each type is simulated once and
+    reused. Neighbour (stacking) effects are NOT modelled."""
+    seq = clean_strand(sequence)
+    per_type = {bp: analyze_base_pair(bp, temperature_K, eta, n_qubits) for bp in sorted({PAIR_OF_BASE[b] for b in seq})}
+    rows = []
+    for i, b in enumerate(seq):
+        r = per_type[PAIR_OF_BASE[b]]
+        rows.append(dict(position=i + 1, base=b, partner=b.translate(COMPLEMENT), pair=PAIR_OF_BASE[b],
+                         tautomer_population=r["tautomer_population"], tautomer_lifetime_s=r["tautomer_lifetime_s"]))
+    n_gc = sum(PAIR_OF_BASE[b] == "G-C" for b in seq)
+    summary = dict(sequence=seq, length=len(seq), gc_fraction=n_gc / len(seq),
+                   expected_tautomer_pairs=sum(r["tautomer_population"] for r in rows),
+                   per_type=per_type)
+    return rows, summary
+
+
+def day7_strand(sequence="ATGCCGTAGCTAGGCTTAACGGATC", temperature_K=310.0):
+    print("\n=== DAY 7: DNA strand mode ===")
+    rows, summ = analyze_strand(sequence, temperature_K)
+    print(f"Strand ({summ['length']} bases, {summ['gc_fraction']*100:.0f}% G-C) at {temperature_K:.0f} K")
+    print("  " + summ["sequence"])
+    print("  " + summ["sequence"].translate(COMPLEMENT) + "   (complementary strand)")
+    for bp, r in summ["per_type"].items():
+        print(f"  {bp}: tautomer population {r['tautomer_population']:.2e}, tautomer lifetime {r['tautomer_lifetime_s']:.1e} s")
+    print(f"  Expected number of base pairs in the tautomer form at any instant: {summ['expected_tautomer_pairs']:.2e}")
+    print("  (per-pair propensity only: no neighbour effects, no replication or repair steps)")
+    return rows, summ
+
+
+def _plot_pes_levels(base_pair, n_levels=14):
+    x, H, V, info = build_pes_hamiltonian(base_pair)
+    E = np.linalg.eigvalsh(H)
+    fig, ax = plt.subplots(figsize=(6, 4))
+    xa = x * BOHR_ANGSTROM
+    ax.plot(xa, (V - V.min()) * HARTREE_EV, "k-", lw=2, label="potential")
+    for k in range(n_levels):
+        ax.hlines((E[k] - V.min()) * HARTREE_EV, xa[0], xa[-1], colors="tab:blue", lw=0.6, alpha=0.7)
+    ax.axvline(info["x_barrier"] * BOHR_ANGSTROM, color="gray", ls=":", lw=1)
+    ax.set_ylim(0, 1.0); ax.set_xlabel("proton position along the H-bond (Å)"); ax.set_ylabel("energy (eV)")
+    ax.set_title(f"{base_pair}: canonical well (left), tautomer well (right)")
+    fig.tight_layout()
+    return fig
+
+
+def run_app():
+    """Streamlit front end:  streamlit run main.py"""
+    import streamlit as st
+    matplotlib.use("Agg")
+    st.set_page_config(page_title="Proton tunneling in DNA", page_icon="🧬", layout="wide")
+
+    @st.cache_data(show_spinner=False)
+    def cached_pair(bp, T, eta):
+        return analyze_base_pair(bp, T, eta)
+
+    @st.cache_data(show_spinner=False)
+    def cached_curve(bp, temps):
+        d = eigen_data(bp)
+        return [gibbs_tautomer_population(d, T) for T in temps]
+
+    st.title("Proton tunneling in DNA base pairs")
+    st.caption("A quantum-simulation workflow (Qiskit Hamiltonian mapping) that estimates how often, and for how long, "
+               "a base pair sits in its rare tautomer form. Input: base pair or strand + temperature. Output: probabilities and lifetimes.")
+
+    with st.sidebar:
+        st.header("Conditions")
+        T = st.slider("Temperature (K)", 273, 400, 310)
+        with st.expander("Advanced"):
+            eta = st.select_slider("Bath coupling strength", options=[0.002, 0.005, 0.01, 0.02, 0.05], value=ETA_DEFAULT,
+                                   help="Illustrative knob: sets how fast the proton exchanges energy with its surroundings.")
+        st.info("This is a **per-base-pair propensity** model. It does not predict mutations or cancer risk.")
+
+    tab_pair, tab_strand, tab_how = st.tabs(["Base pair", "DNA strand", "How it works & limits"])
+
+    with tab_pair:
+        bp = st.radio("Base pair", ["A-T", "G-C"], horizontal=True)
+        r = cached_pair(bp, float(T), float(eta))
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Tautomer population", f"{r['tautomer_population']:.1e}", help="Fraction of time the proton is on the tautomer side.")
+        c2.metric("Tautomer lifetime", f"{r['tautomer_lifetime_s']:.1e} s")
+        c3.metric("Canonical lifetime", f"{r['canonical_lifetime_s']:.1e} s", help="Weak-coupling bath model: likely too long (see limits).")
+        left, right = st.columns(2)
+        with left:
+            st.pyplot(_plot_pes_levels(bp))
+        with right:
+            temps = tuple(float(t) for t in range(250, 401, 5))
+            fig, ax = plt.subplots(figsize=(6, 4))
+            for name, color in [("A-T", "tab:red"), ("G-C", "tab:blue")]:
+                ax.semilogy(temps, cached_curve(name, temps), color=color, label=name, lw=2 if name == bp else 1)
+            ax.axvline(T, color="gray", ls=":")
+            ax.set_xlabel("temperature (K)"); ax.set_ylabel("tautomer population"); ax.legend(); ax.set_title("Population vs temperature")
+            fig.tight_layout(); st.pyplot(fig)
+        ratio = cached_pair("G-C", float(T), float(eta))["tautomer_population"] / cached_pair("A-T", float(T), float(eta))["tautomer_population"]
+        st.write(f"At {T} K, a G-C pair is about **{ratio:,.0f}x** more likely than an A-T pair to be in its tautomer form.")
+
+    with tab_strand:
+        default = "ATGCCGTAGCTAGGCTTAACGGATC"
+        text = st.text_area("DNA sequence (A, C, G, T; FASTA is fine)", default, height=100)
+        try:
+            rows, summ = analyze_strand(text, float(T), float(eta))
+        except ValueError as e:
+            st.error(str(e)); st.stop()
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Length", f"{summ['length']} bp")
+        m2.metric("G-C content", f"{summ['gc_fraction']*100:.0f}%")
+        m3.metric("Expected tautomer pairs", f"{summ['expected_tautomer_pairs']:.1e}", help="Sum of per-pair populations: average number of pairs in tautomer form at one instant.")
+        hi = max(r["tautomer_population"] for r in rows); lo = min(r["tautomer_population"] for r in rows)
+        spans = []
+        for r in rows:
+            f = 0.0 if hi == lo else (np.log10(r["tautomer_population"]) - np.log10(lo)) / (np.log10(hi) - np.log10(lo))
+            colour = f"rgba(214, 39, 40, {0.12 + 0.7 * f:.2f})"
+            spans.append(f"<span style='background:{colour};padding:2px 3px;margin:1px;border-radius:3px;font-family:monospace;font-size:1.2em'>{r['base']}</span>")
+        st.markdown("".join(spans), unsafe_allow_html=True)
+        st.caption("Darker = higher tautomer propensity (G-C pairs). Neighbour effects are not modelled, so every A/T looks identical and every G/C looks identical.")
+        st.dataframe(rows, height=250)
+
+    with tab_how:
+        st.markdown("""
+**Motivation**
+
+The accuracy of DNA replication depends on the position of a single proton within each hydrogen-bonded base pair.
+Occasionally that proton can tunnel to an alternative site and form a rare tautomer, a mechanism that has been
+proposed as one source of spontaneous point mutations. Because the proton is a quantum particle, modelling it
+properly requires quantum mechanics, and the many-particle versions of this problem become intractable for
+classical computers as they grow. Yet the researchers who need these answers are biologists and biochemists, who
+should not have to work with qubits, Pauli operators or Trotterization to obtain them.
+
+**Connection to the hackathon challenge**
+
+The challenge asks participants to use Qiskit to create a new tool, interface or abstraction that bridges quantum
+computing and a non-quantum field. This project does so for molecular biology. The user supplies a base pair or a
+DNA strand and a temperature, and receives tautomer populations and lifetimes in return, through a single function
+call, `analyze_base_pair`, and this web interface. Behind that abstraction, Qiskit carries out the quantum
+workflow: `SparsePauliOp` maps the proton's physical Hamiltonian onto six qubits, `PauliEvolutionGate` builds
+Trotterized time-evolution circuits that are validated against exact results, and a shallow variational circuit
+(depth 16) recovers the lowest energy levels, a form suited to near-term hardware. Every quantum step is checked
+against a classical calculation and reported with its real cost in circuit depth, gate count and measurement circuits.
+
+**Contribution and scope**
+
+What this work contributes is the bridge itself: published proton-transfer potentials for the A-T and G-C base
+pairs, connected through Qiskit to an interface that a non-specialist can use.At six qubits the problem is solved exactly on a laptop, and the value lies in a validated, extensible
+workflow that is designed to accommodate larger and more realistic systems.
+
+---
+""")
+        st.markdown("""
+**Pipeline (the "bridge")**
+1. **Input** a base pair (or strand) and temperature.
+2. **Physics:** the proton moves in an asymmetric double-well potential taken from published DFT work
+   (Slocombe, Al-Khalili & Sacchi 2021 for A-T and G-C barriers; 2022 for the G-C Morse surface).
+3. **Qiskit mapping:** the 64-point grid Hamiltonian becomes a 6-qubit `SparsePauliOp` (118 Pauli terms).
+   Trotter circuits reproduce the exact dynamics; a shallow variational (VQD) circuit recovers the lowest energy levels.
+4. **Bath:** a weak-coupling thermal master equation turns energy levels into populations, rates and lifetimes.
+
+**Limits Faced**
+- Models only step 1 of a long chain (tautomer exists -> present at replication -> mispaired -> escapes repair -> harmful -> cancer).
+- Whether proton tunneling really drives spontaneous mutation is still debated.
+- 1D model, no stacking/neighbour or protein effects; A-T well positions are borrowed from the G-C model.
+- Weak-coupling bath: tautomer *populations* are far below the 1.7e-4 reported with a strong-coupling treatment, and forward
+  rates miss part of the tunneling enhancement. Read it as relative propensity, not an absolute prediction.
+- At 6 qubits a laptop simulates this exactly; there is no claimed quantum advantage. Trotter circuits are far too deep for current hardware.
+""")
+
+
+def _running_in_streamlit():
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+        try:
+            return get_script_run_ctx(suppress_warning=True) is not None
+        except TypeError:                             # older Streamlit without the flag
+            return get_script_run_ctx() is not None
+    except Exception:
+        return False
+
+
 if __name__ == "__main__":
-    # python main.py          -> runs Days 1-5.     python main.py 4 5  -> runs only Days 4 and 5
-    days = {int(a) for a in sys.argv[1:]} or {1, 2, 3, 4, 5}
-    if 1 in days: day1_qiskit_basics()
-    if 2 in days: day2_double_well()
-    if 3 in days: day3_trotter()
-    if 4 in days: day4_real_potentials()
-    if 5 in days: day5_open_system()
+    if _running_in_streamlit():                       # launched with:  streamlit run main.py
+        run_app()
+    else:                                             # launched with:  python main.py [days]
+        days = {int(a) for a in sys.argv[1:]} or {1, 2, 3, 4, 5, 6, 7}
+        if 1 in days: day1_qiskit_basics()
+        if 2 in days: day2_double_well()
+        if 3 in days: day3_trotter()
+        if 4 in days: day4_real_potentials()
+        if 5 in days: day5_open_system()
+        if 6 in days: day6_vqd()
+        if 7 in days: day7_strand()

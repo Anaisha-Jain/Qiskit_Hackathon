@@ -2,3 +2,4 @@ qiskit
 numpy
 scipy
 matplotlib
+streamlit
