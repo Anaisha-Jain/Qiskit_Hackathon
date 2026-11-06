@@ -730,10 +730,16 @@ def run_app():
             fig.tight_layout(); st.pyplot(fig)
         ratio = cached_pair("G-C", float(T), float(eta))["tautomer_population"] / cached_pair("A-T", float(T), float(eta))["tautomer_population"]
         st.write(f"At {T} K, a G-C pair is about **{ratio:,.0f}x** more likely than an A-T pair to be in its tautomer form.")
+        try:
+            seq_now = clean_strand(st.session_state.get("strand_text", "ATGCCGTAGCTAGGCTTAACGGATC"))
+            n_at = sum(PAIR_OF_BASE[b] == "A-T" for b in seq_now); n_gc = len(seq_now) - n_at
+            st.write(f"Your strand (DNA strand tab) contains **{n_at} A-T** and **{n_gc} G-C** pairs.")
+        except ValueError:
+            pass
 
     with tab_strand:
         default = "ATGCCGTAGCTAGGCTTAACGGATC"
-        text = st.text_area("DNA sequence (A, C, G, T; FASTA is fine)", default, height=100)
+        text = st.text_area("DNA sequence (A, C, G, T; FASTA is fine)", default, height=100, key="strand_text")
         try:
             rows, summ = analyze_strand(text, float(T), float(eta))
         except ValueError as e:
@@ -750,6 +756,16 @@ def run_app():
             spans.append(f"<span style='background:{colour};padding:2px 3px;margin:1px;border-radius:3px;font-family:monospace;font-size:1.2em'>{r['base']}</span>")
         st.markdown("".join(spans), unsafe_allow_html=True)
         st.caption("Darker = higher tautomer propensity (G-C pairs). Neighbour effects are not modelled, so every A/T looks identical and every G/C looks identical.")
+        pops = [r["tautomer_population"] for r in rows]
+        fig, ax = plt.subplots(figsize=(max(6, 0.4 * len(rows)), 3.2))
+        ax.bar([r["position"] for r in rows], pops, color=["tab:blue" if r["pair"] == "G-C" else "tab:red" for r in rows])
+        ax.set_yscale("log"); ax.set_ylim(min(pops) / 10, max(pops) * 3)
+        ax.set_xticks([r["position"] for r in rows]); ax.set_xticklabels([r["base"] for r in rows])
+        ax.set_xlabel("position in strand"); ax.set_ylabel("tautomer population")
+        ax.set_title("Tautomer propensity along the strand (blue = G-C, red = A-T)")
+        fig.tight_layout(); st.pyplot(fig)
+        
+        
         st.dataframe(rows, height=250)
 
     with tab_how:
