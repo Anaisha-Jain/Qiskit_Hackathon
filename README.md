@@ -3,7 +3,9 @@
 > **Hackathon challenge:** use Qiskit to create a new tool, interface, or abstraction that bridges quantum computing and a non-quantum field.
 > **Our answer:** a workflow that takes a DNA base pair (or strand) and a temperature and returns how often, and for how long, the pair sits in its rare *tautomer* form. The quantum work (qubit mapping, time-evolution circuits, a shallow variational circuit) happens behind one function call and a web app, so a biologist never sees a gate.
 
-**Authors:** _[Anaisha Jain]_  **Hackathon:** _[IBM Qiskit Hackathon]_
+**Authors:** _Anaisha Jain_  **Hackathon:** _IBM Qiskit Hackathon_
+
+## Check it out! https://qiskithackathon-nanobots.streamlit.app/
 
 ---
 
@@ -154,7 +156,3 @@ pip install -r requirements.txt
 1. L. Slocombe, M. Sacchi, J. Al-Khalili, *An open quantum systems approach to proton tunnelling in DNA*, Communications Physics 5, 109 (2022).
 2. L. Slocombe, J. Al-Khalili, M. Sacchi, *Quantum and classical effects in DNA point mutations: Watson-Crick tautomerism in AT and GC base pairs*, Physical Chemistry Chemical Physics 23, 4141 (2021).
 3. Qiskit SDK and Qiskit Runtime documentation, IBM Quantum.
-
-## 9. Acknowledgements
-
-_[Add team members, mentors, and any AI-assistance disclosure the hackathon requires.]_
