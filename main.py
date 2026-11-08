@@ -72,7 +72,7 @@ def evolve_probs(H, psi0, x, times, x_split=0.0):
 
 
 def day2_double_well():
-    print("\n=== DAY 2: classical double-well model ===")
+    print("\nDAY 2: classical double-well model")
     x, H, V = build_hamiltonian(asym=0.0)
     E, U = np.linalg.eigh(H)
     print("Lowest levels:", np.round(E[:4], 3))
@@ -116,17 +116,11 @@ def day2_double_well():
     print("Saved plot -> day2_double_well.png")
     plt.show()   # pop-up window (close it to end the script)
 
-
-# =====================================================================
-# DAY 3: THE QUANTUM VERSION (Trotterized circuits vs exact)
-# =====================================================================
 def trotter_step(op, n_qubits, dt, formula):
     """Build the circuit for ONE Trotter step of size dt.
     Returns (circuit, matrix) where matrix is the 2^n x 2^n unitary that circuit implements."""
     qc = QuantumCircuit(n_qubits)
     qc.append(PauliEvolutionGate(op, time=dt, synthesis=formula), range(n_qubits))
-    # IMPORTANT: .decompose() turns the gate into real CNOT/rotation gates.
-    # Without it, Operator()/Statevector would use the EXACT matrix and hide the Trotter error.
     qc = qc.decompose(reps=2)
     return qc, Operator(qc).data
 
@@ -144,7 +138,7 @@ def trotter_probs(op, n_qubits, psi0, x, t_max, n_steps, formula, x_split=0.0):
 
 
 def day3_trotter():
-    print("\n=== DAY 3: quantum (Trotter) simulation of the double well ===")
+    print("\nDAY 3: quantum (Trotter) simulation of the double well")
     n_qubits, t_max = 4, 20.0
     x, H, V = build_hamiltonian(n_qubits=n_qubits, asym=0.0)
     psi0 = left_well_state(x)
@@ -156,14 +150,12 @@ def day3_trotter():
     top = sorted(zip(op.paulis.to_labels(), op.coeffs), key=lambda p: -abs(p[1]))[:5]
     print("  biggest terms:", [(lab, round(c.real, 2)) for lab, c in top])
 
-    # --- Step 2: look at one Trotter step as a real circuit ---
     qc1, U1 = trotter_step(op, n_qubits, 0.05, LieTrotter(reps=1))
     sv = Statevector(psi0).evolve(qc1)                  # run the actual circuit on the statevector
     assert np.allclose(sv.data, U1 @ psi0), "circuit and its matrix disagree"
     print(f"One Lie-Trotter step: depth={qc1.depth()}, CNOTs={qc1.count_ops().get('cx', 0)}, "
           f"total gates={sum(qc1.count_ops().values())}")
-
-    # --- Step 3: Trotter dynamics vs exact (Day 2) ---
+    
     formulas = {
         "Lie (1st order)":    lambda: LieTrotter(reps=1),
         "Suzuki order 2":     lambda: SuzukiTrotter(order=2, reps=1),
@@ -209,9 +201,7 @@ def day3_trotter():
         print(f"  {nq:>6}  {2**nq:>8}  {len(opn):>11}  {qcn.count_ops().get('cx', 0):>10}  {qcn.depth():>10}")
     plt.show()
 
-# =====================================================================
-# DAY 4: REAL PHYSICS -- literature proton-transfer potentials (atomic units)
-# =====================================================================
+
 # Atomic units: hbar = m_e = e = 1. Energy in Hartree, length in bohr, time in 24.19 attoseconds.
 HARTREE_EV = 27.211386          # 1 Hartree in eV
 PROTON_MASS = 1836.152673       # proton mass in atomic units
@@ -264,7 +254,6 @@ def stationary_points(pot, lo=-3.6, hi=3.0):
     return q[idx[0]], q[idx[1]], q[idx[2]]
 
 
-# name -> (potential function, literature (Ef, Er, dE) in eV)
 PRESETS = {
     "G-C (Morse 2022)": (gc_morse_pes, (0.705, 0.270, 0.435)),
     "G-C":              (barrier_fit_pes(0.693, 0.266), (0.693, 0.266, 0.427)),
@@ -303,11 +292,11 @@ def excited_wavepacket(x, H, x_canon, x_barrier, e_exc_eV, width=0.3):
 
 
 def day4_real_potentials(e_exc_eV=0.55):
-    print("\n=== DAY 4: real A-T / G-C proton-transfer potentials ===")
+    print("\nDAY 4: real A-T / G-C proton-transfer potentials")
     n_qubits = 6
     results = {}
 
-    # --- 1. does each potential reproduce the published barriers? ---
+    #does each potential reproduce the published barriers? ---
     print("Potential check (eV): model vs literature")
     for name, (pot, (Ef, Er, dE)) in PRESETS.items():
         xl, xb, xr = stationary_points(pot)
@@ -315,14 +304,14 @@ def day4_real_potentials(e_exc_eV=0.55):
         m_d = (pot(xr) - pot(xl)) * HARTREE_EV
         print(f"  {name:<18} forward {m_f:.3f}/{Ef:.3f}   reverse {m_r:.3f}/{Er:.3f}   asymmetry {m_d:.3f}/{dE:.3f}")
 
-    # --- 2. is a 6-qubit (64-point) grid fine enough? ---
+    #is a 6-qubit (64-point) grid fine enough? ---
     print("\nGrid convergence, G-C (Morse): first excitation energies (eV above ground state)")
     for nq in (5, 6, 7, 8):
         _, Hn, _, _ = build_pes_hamiltonian("G-C (Morse 2022)", n_qubits=nq)
         En = np.linalg.eigvalsh(Hn)
         print(f"  {nq} qubits ({2**nq:>3} pts): {np.round((En[1:4] - En[0]) * HARTREE_EV, 4)}")
 
-    # --- 3. spectrum and where each energy level lives ---
+    #spectrum and where each energy level lives ---
     fig, ax = plt.subplots(1, 3, figsize=(16, 4.6))
     for name, color in [("G-C", "tab:blue"), ("A-T", "tab:red")]:
         x, H, V, info = build_pes_hamiltonian(name, n_qubits)
@@ -339,14 +328,14 @@ def day4_real_potentials(e_exc_eV=0.55):
     ax[0].set_ylim(0, 1.0); ax[0].set_xlabel("proton coordinate (Å)"); ax[0].set_ylabel("energy (eV)")
     ax[0].set_title("Literature potentials + energy levels"); ax[0].legend()
 
-    # --- 4. the quantum mapping of the REAL Hamiltonian ---
+    #the quantum mapping of the REAL Hamiltonian ---
     x, H, V, info = results["G-C"]["x"], results["G-C"]["H"], results["G-C"]["V"], results["G-C"]["info"]
     op = SparsePauliOp.from_operator(H)
     qc1, _ = trotter_step(op, n_qubits, 1.0, LieTrotter(reps=1))
     print(f"\nG-C Hamiltonian on {n_qubits} qubits: {len(op)} Pauli terms; "
           f"one Lie-Trotter step = {qc1.count_ops().get('cx', 0)} CNOTs, depth {qc1.depth()}")
 
-    # --- 5. coherent tunneling of an excited proton: exact vs Trotter circuits ---
+    #coherent tunneling of an excited proton: exact vs Trotter circuits ---
     t_max, n_steps = 6000.0, 1500                    # 6000 a.u. = 145 fs
     print(f"\nCoherent dynamics: proton given {e_exc_eV} eV of vibrational energy, {t_max*AU_TIME_FS:.0f} fs")
     for name, color in [("G-C", "tab:blue"), ("A-T", "tab:red")]:
@@ -366,7 +355,7 @@ def day4_real_potentials(e_exc_eV=0.55):
     ax[1].set_xlabel("time (fs)"); ax[1].set_ylabel("P(proton on tautomer side)")
     ax[1].set_title(f"Coherent tunneling, {e_exc_eV} eV excitation"); ax[1].legend(fontsize=8)
 
-    # --- 6. why this matters: where the levels sit relative to the barrier ---
+    #why this matters: where the levels sit relative to the barrier ---
     for name, color in [("G-C", "tab:blue"), ("A-T", "tab:red")]:
         r = results[name]
         w = (r["U"][r["x"] > r["info"]["x_barrier"], :] ** 2).sum(axis=0)
@@ -379,9 +368,6 @@ def day4_real_potentials(e_exc_eV=0.55):
     return results
 
 
-# =====================================================================
-# DAY 5: OPEN QUANTUM SYSTEM -- the proton in a thermal bath
-# =====================================================================
 # The coherent model (Days 1-4) oscillates forever and ignores temperature. A real H-bond proton is
 # constantly jostled by its surroundings. We model that with a thermal bath coupled to the proton's
 # position x (Ohmic spectral density, weak-coupling / secular master equation in the energy basis):
@@ -477,7 +463,7 @@ def analyze_base_pair(base_pair, temperature_K=310.0, eta=ETA_DEFAULT, n_qubits=
 
 
 def day5_open_system(eta=ETA_DEFAULT):
-    print("\n=== DAY 5: open quantum system (thermal bath) ===")
+    print("\nDAY 5: open quantum system (thermal bath)")
     names = ["G-C", "A-T", "G-C (Morse 2022)"]
     data = {n: eigen_data(n) for n in names}
     temps = np.linspace(250, 400, 31)
@@ -527,9 +513,6 @@ def day5_open_system(eta=ETA_DEFAULT):
     plt.show()
 
 
-# =====================================================================
-# DAY 6: SHALLOW-CIRCUIT ENERGY LEVELS (variational quantum deflation) -- the hardware-friendly part
-# =====================================================================
 # Trotter circuits (Days 3-4) are far too deep for today's hardware. A variational circuit is the
 # opposite trade: a SHORT, fixed-depth circuit whose angles are tuned by a classical optimizer.
 #   Level 0: minimize <psi|H|psi>                         (VQE)
@@ -574,7 +557,7 @@ def vqd_energy_levels(n_qubits=6, base_pair="G-C", n_levels=3, reps=4, beta=8.0,
 
 
 def day6_vqd(n_levels=3):
-    print("\n=== DAY 6: shallow-circuit energy levels (variational quantum deflation) ===")
+    print("\nDAY 6: shallow-circuit energy levels (variational quantum deflation")
     n_qubits = 6
     r = vqd_energy_levels(n_qubits=n_qubits, n_levels=n_levels)
     print("\nlevel   VQD (eV above potential min)   exact (eV)   error (meV)   overlap with exact eigenstate")
@@ -584,7 +567,7 @@ def day6_vqd(n_levels=3):
     gap_err = ((r["vqd_eV"][1] - r["vqd_eV"][0]) - (r["exact_eV"][1] - r["exact_eV"][0])) * 1000
     print(f"  first level spacing (E1 - E0) error: {gap_err:.2f} meV out of {(r['exact_eV'][1]-r['exact_eV'][0])*1000:.0f} meV")
 
-    # --- cost comparison: variational circuit vs Trotter circuits, and measurement burden ---
+
     ans = r["ansatz"]
     op = SparsePauliOp.from_operator(r["H"])
     lie, _ = trotter_step(op, n_qubits, 1.0, LieTrotter(reps=1))
@@ -616,9 +599,6 @@ def day6_vqd(n_levels=3):
     return r
 
 
-# =====================================================================
-# DAY 7: DNA STRAND MODE + STREAMLIT APP
-# =====================================================================
 PAIR_OF_BASE = {"A": "A-T", "T": "A-T", "G": "G-C", "C": "G-C"}
 COMPLEMENT = str.maketrans("ACGT", "TGCA")
 
@@ -654,7 +634,7 @@ def analyze_strand(sequence, temperature_K=310.0, eta=ETA_DEFAULT, n_qubits=6):
 
 
 def day7_strand(sequence="ATGCCGTAGCTAGGCTTAACGGATC", temperature_K=310.0):
-    print("\n=== DAY 7: DNA strand mode ===")
+    print("\nDAY 7: DNA strand mode")
     rows, summ = analyze_strand(sequence, temperature_K)
     print(f"Strand ({summ['length']} bases, {summ['gc_fraction']*100:.0f}% G-C) at {temperature_K:.0f} K")
     print("  " + summ["sequence"])
